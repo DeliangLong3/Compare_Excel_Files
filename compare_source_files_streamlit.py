@@ -15,6 +15,7 @@ from datetime import datetime
 import logging
 # from tkinter import Tk, filedialog # 移除 tkinter 导入
 from itertools import combinations # 用于生成文件对
+from io import BytesIO # 导入BytesIO
 
 # --- Kimi API 相关函数 (从 compare_source_files.py 迁移) ---
 
@@ -170,15 +171,16 @@ if 'final_excel_path' not in st.session_state:
 with st.sidebar:
     st.header("⚙️ 配置选项")
 
-    # 使用文件上传组件代替目录输入
+    # 1. 文件上传
+    st.subheader("1. 上传文件")
     uploaded_files = handle_file_upload()
     st.session_state['uploaded_files'] = uploaded_files # 保存上传的文件列表
 
-    st.text_input("1. 输入输出目录", key='output_dir', placeholder="保存对比结果的文件夹路径")
-
     st.divider()
 
-    st.text_input("2. Kimi API 密钥", type="password", key='api_key', placeholder="请输入您的DashScope API密钥")
+    # 2. API密钥输入
+    st.subheader("2. 输入密钥")
+    st.text_input("Kimi API 密钥", type="password", key='api_key', placeholder="请输入您的DashScope API密钥", help="此工具需要调用Kimi模型进行AI分析。")
 
     st.divider()
 
@@ -186,171 +188,130 @@ with st.sidebar:
     process_button = st.button("开始对比分析", type="primary", use_container_width=True)
 
 # --- 文件比较核心逻辑 ---
-def perform_comparison(uploaded_files, output_dir, api_key):
+def perform_comparison(uploaded_files, api_key):
     """
-    处理上传的Excel文件，进行两两比较，并将结果保存到输出目录。
+    处理上传的Excel文件，进行两两比较，并将所有结果整合到一个Excel文件的内存对象中。
+    返回一个包含Excel文件数据的BytesIO对象。
     """
     if len(uploaded_files) < 2:
         logging.error("请上传至少两个 Excel 文件进行比较。")
         return None
 
-    # 将上传的文件保存到临时目录，以便 glob.glob 可以找到它们
-    # 注意：Streamlit Cloud 的文件上传是临时的，直接使用文件对象更佳
-    # 这里我们模拟一个文件列表，包含文件名和文件内容
-    file_data = []
-    for uploaded_file in uploaded_files:
-        file_name = uploaded_file.name
-        try:
-            # 读取文件内容，这里假设是Excel文件，需要用pandas读取
-            # 为了简化，我们先只获取文件名，实际比较时需要读取内容
-            file_data.append({'name': file_name, 'file_obj': uploaded_file})
-        except Exception as e:
-            logging.error(f"读取上传文件 '{file_name}' 时出错: {e}")
-            continue
-
-    if len(file_data) < 2:
-        logging.error("未能成功处理至少两个 Excel 文件。")
-        return None
-
-    # 生成所有文件对的组合
+    file_data = [{'name': f.name, 'file_obj': f} for f in uploaded_files]
     file_pairs = list(combinations(file_data, 2))
-
     logging.info(f"发现 {len(file_data)} 个 Excel 文件，将进行 {len(file_pairs)} 对两两比较。")
 
-    # 创建一个总的ExcelWriter来写入所有结果
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    overall_output_filename = os.path.join(output_dir, f'Overall_Comparison_{timestamp}.xlsx')
+    # 创建一个内存中的Excel写入器
+    output_buffer = BytesIO()
+    with pd.ExcelWriter(output_buffer, engine='xlsxwriter') as writer:
+        overview_data = [] # 用于总览表的数据
 
-    try:
-        with pd.ExcelWriter(overall_output_filename, engine='xlsxwriter') as writer:
-            # 写入一个概览表，列出所有比较对
-            overview_data = []
-            for i, (file1_info, file2_info) in enumerate(file_pairs):
-                file1_name, file2_name = file1_info['name'], file2_info['name']
-                file1_obj, file2_obj = file1_info['file_obj'], file2_info['file_obj']
-                logging.info(f"\n--- 开始比较对 {i+1}/{len(file_pairs)}: {file1_name} vs {file2_name} ---")
+        for i, (file1_info, file2_info) in enumerate(file_pairs):
+            file1_name, file2_name = file1_info['name'], file2_info['name']
+            file1_obj, file2_obj = file1_info['file_obj'], file2_info['file_obj']
+            
+            # 创建一个对用户友好的工作表名称
+            pair_sheet_name_base = f"{file1_name[:10]}_vs_{file2_name[:10]}"
+            
+            logging.info(f"\n--- 开始比较对 {i+1}/{len(file_pairs)}: {file1_name} vs {file2_name} ---")
 
-                try:
-                    # 使用 BytesIO 来处理上传的文件对象
-                    from io import BytesIO
-                    
-                    # 读取 Excel 文件内容
-                    df1 = pd.read_excel(BytesIO(file1_obj.getvalue()), sheet_name=None)
-                    df2 = pd.read_excel(BytesIO(file2_obj.getvalue()), sheet_name=None)
-                    
-                    sheets1 = set(df1.keys())
-                    sheets2 = set(df2.keys())
+            try:
+                # 重置文件对象的读取指针
+                file1_obj.seek(0)
+                file2_obj.seek(0)
+                df1 = pd.read_excel(file1_obj, sheet_name=None)
+                df2 = pd.read_excel(file2_obj, sheet_name=None)
+                sheets1, sheets2 = set(df1.keys()), set(df2.keys())
 
-                except Exception as e:
-                    logging.error(f"读取 Excel 文件 '{file1_name}' 或 '{file2_name}' 时出错: {e}")
-                    overview_data.append({'文件1': file1_name, '文件2': file2_name, '状态': '读取错误', '说明': str(e)})
+            except Exception as e:
+                logging.error(f"读取 Excel 文件 '{file1_name}' 或 '{file2_name}' 时出错: {e}")
+                overview_data.append({'文件1': file1_name, '文件2': file2_name, '状态': '读取错误', '说明': str(e)})
+                continue
+
+            common_sheets = sorted(list(sheets1.intersection(sheets2)))
+            
+            # 为每个文件对创建一个概览工作表
+            pair_overview_data = {
+                '状态': ['共有工作表', '仅在文件1中', '仅在文件2中'],
+                '工作表名称': [", ".join(common_sheets), ", ".join(sorted(list(sheets1 - sheets2))), ", ".join(sorted(list(sheets2 - sheets1)))]
+            }
+            pair_overview_df = pd.DataFrame(pair_overview_data)
+            pair_overview_df.to_excel(writer, sheet_name=f"概览_{pair_sheet_name_base[:20]}", index=False)
+
+            if not common_sheets:
+                logging.warning(f"文件 '{file1_name}' 和 '{file2_name}' 没有共同的工作表可供比较。")
+                overview_data.append({'文件1': file1_name, '文件2': file2_name, '状态': '无共同工作表', '说明': '无共同工作表，跳过。'})
+                continue
+
+            logging.info(f"正在比较共同工作表: {', '.join(common_sheets)}")
+
+            for sheet_name in common_sheets:
+                logging.info(f"--- 正在处理工作表: {sheet_name} ---")
+                current_df1, current_df2 = df1[sheet_name], df2[sheet_name]
+
+                # 定义当前比较的详细工作表名称
+                details_sheet_name = f"差异_{pair_sheet_name_base[:15]}_{sheet_name[:10]}"
+
+                if current_df1.equals(current_df2):
+                    logging.info(f"工作表 '{sheet_name}' 内容完全相同，跳过API分析。")
+                    details_df = pd.DataFrame([{'状态': '内容完全相同', '说明': f"工作表 '{sheet_name}' 在两个文件中的内容完全相同。"}])
+                    details_df.to_excel(writer, sheet_name=details_sheet_name, index=False)
                     continue
 
-                common_sheets = sorted(list(sheets1.intersection(sheets2)))
+                comparison_result = get_comparison_from_kimi(
+                    convert_df_to_json_string(current_df1),
+                    convert_df_to_json_string(current_df2),
+                    file1_name, file2_name, sheet_name, api_key
+                )
 
-                if not common_sheets:
-                    logging.warning(f"文件 '{file1_name}' 和 '{file2_name}' 没有共同的工作表可供比较。")
-                    overview_data.append({'文件1': file1_name, '文件2': file2_name, '状态': '无共同工作表', '说明': '两个文件没有共同的工作表可供比较。'})
-                    continue
+                if comparison_result:
+                    try:
+                        table_str = comparison_result.strip()
+                        lines = table_str.strip().split('\n')
+                        if len(lines) > 1 and '|' in lines[0] and '---' in lines[1]:
+                            header = [h.strip() for h in lines[0].strip().strip('|').split('|')]
+                            data_rows = [ [p.strip() for p in line.strip().strip('|').split('|')] for line in lines[2:] if '|' in line]
+                            details_df = pd.DataFrame(data_rows, columns=header)
+                            if details_df.empty:
+                                details_df.loc[0] = ["无程序化差异"] * len(header)
+                                details_df.iloc[0, -1] = "Kimi报告了一个空表格，可能意味着内容虽不同但无显著结构性差异。"
+                        else:
+                             details_df = pd.DataFrame([{'说明': f"Kimi报告在 '{sheet_name}' 中未发现结构化差异。", '原始输出': table_str}])
+                        
+                        details_df.to_excel(writer, sheet_name=details_sheet_name, index=False)
+                        
+                        # 自动调整列宽
+                        worksheet = writer.sheets[details_sheet_name]
+                        for idx, col in enumerate(details_df):
+                            series = details_df[col]
+                            max_len = max((series.astype(str).map(len).max(), len(str(series.name)))) + 2
+                            worksheet.set_column(idx, idx, min(max_len, 50))
 
-                logging.info(f"正在比较共同工作表: {', '.join(common_sheets)}")
+                        logging.info(f"已将 '{sheet_name}' 的详细差异对比结果写入到总报告中。")
+                    except Exception as e:
+                        logging.error(f"解析Kimi为工作表 '{sheet_name}' 返回的Markdown表格并保存时出错: {e}")
+                        pd.DataFrame({'原始返回内容': [comparison_result]}).to_excel(writer, sheet_name=f"错误_{pair_sheet_name_base[:20]}", index=False)
+                else:
+                    logging.warning(f"未能从Kimi获取工作表 '{sheet_name}' 的比较结果。")
+                    pd.DataFrame({'错误': [f"未能从Kimi获取 '{sheet_name}' 的工作流比较结果。"]}).to_excel(writer, sheet_name=f"错误_{pair_sheet_name_base[:20]}", index=False)
+            
+            overview_data.append({'文件1': file1_name, '文件2': file2_name, '状态': '已完成', '说明': f"详细比较结果已生成在Excel报告中。"})
+            logging.info(f"--- 比较对 {file1_name} vs {file2_name} 完成 ---")
 
-                comparison_pair_output_filename = os.path.join(output_dir, f'Comparison_{file1_name}_vs_{file2_name}.xlsx')
+        # 最后写入总览表
+        overall_overview_df = pd.DataFrame(overview_data)
+        overall_overview_df.to_excel(writer, sheet_name='总览-所有比较对', index=False)
+        worksheet = writer.sheets['总览-所有比较对']
+        for idx, col in enumerate(overall_overview_df):
+            series = overall_overview_df[col]
+            max_len = max((series.astype(str).map(len).max(), len(str(series.name)))) + 2
+            worksheet.set_column(idx, idx, min(max_len, 60))
+            
+        logging.info("已生成总的概览表。")
 
-                try:
-                    with pd.ExcelWriter(comparison_pair_output_filename, engine='xlsxwriter') as pair_writer:
-                        overview_pair_data = {
-                            '状态': ['共有工作表', '仅在文件1中', '仅在文件2中'],
-                            '工作表名称': [", ".join(common_sheets), ", ".join(sorted(list(sheets1 - sheets2))), ", ".join(sorted(list(sheets2 - sheets1)))]
-                        }
-                        overview_pair_df = pd.DataFrame(overview_pair_data)
-                        overview_pair_df.to_excel(pair_writer, sheet_name='概览', index=False)
-                        logging.info(f"已生成 '{file1_name}_vs_{file2_name}' 的“概览”工作表。")
-
-                        for sheet_name in common_sheets:
-                            logging.info(f"--- 正在处理工作表: {sheet_name} ---")
-                            
-                            # 获取当前工作表的 DataFrame
-                            current_df1 = df1[sheet_name]
-                            current_df2 = df2[sheet_name]
-
-                            if current_df1.equals(current_df2):
-                                logging.info(f"工作表 '{sheet_name}' 内容完全相同，跳过API分析。")
-                                summary_text = f"工作表 '{sheet_name}' 在两个文件中的内容完全相同。"
-                                df_details = pd.DataFrame([{'状态': '相同', '说明': summary_text}])
-
-                                summary_df = pd.DataFrame({'总结': [summary_text]})
-                                summary_df.to_excel(pair_writer, sheet_name=f"{sheet_name[:25]}_总结", index=False)
-                                df_details.to_excel(pair_writer, sheet_name=f"{sheet_name[:25]}_差异", index=False)
-                                continue
-
-                            df1_content_str = convert_df_to_json_string(current_df1)
-                            df2_content_str = convert_df_to_json_string(current_df2)
-
-                            comparison_result = get_comparison_from_kimi(
-                                df1_content_str, df2_content_str, file1_name, file2_name, sheet_name, api_key
-                            )
-
-                            if comparison_result:
-                                try:
-                                    table_str = comparison_result.strip()
-                                    lines = table_str.strip().split('\n')
-
-                                    if len(lines) > 1 and '|' in lines[0] and '---' in lines[1]:
-                                        header = [h.strip() for h in lines[0].strip().strip('|').split('|')]
-                                        data_rows = []
-                                        for line in lines[2:]:
-                                            parts = [p.strip() for p in line.strip().strip('|').split('|')]
-                                            if len(parts) == len(header):
-                                                data_rows.append(parts)
-                                        details_df = pd.DataFrame(data_rows, columns=header)
-                                    elif '|' in lines[0]: # 可能是只有表头的空表格
-                                        header = [h.strip() for h in lines[0].strip().strip('|').split('|')]
-                                        details_df = pd.DataFrame(columns=header)
-                                        if details_df.empty:
-                                            details_df.loc[0] = ['无差异'] * len(header)
-                                            details_df['差异说明'] = "Kimi报告在此工作表中未发现显著差异。"
-                                    else:
-                                        details_df = pd.DataFrame([{'说明': f"Kimi报告在工作表 '{sheet_name}' 中未发现差异或返回格式不正确。", '原始输出': table_str}])
-
-                                    details_df.to_excel(pair_writer, sheet_name=f"{sheet_name[:25]}_差异对比", index=False)
-
-                                    worksheet = pair_writer.sheets[f"{sheet_name[:25]}_差异对比"]
-                                    for idx, col in enumerate(details_df):
-                                        series = details_df[col]
-                                        max_len = max((series.astype(str).map(len).max(), len(str(series.name)))) + 2
-                                        worksheet.set_column(idx, idx, min(max_len, 50))
-
-                                    logging.info(f"已将 '{sheet_name}' 的详细差异对比结果写入到输出文件中。")
-
-                                except Exception as e:
-                                    logging.error(f"解析Kimi为工作表 '{sheet_name}' 返回的Markdown表格并保存时出错: {e}")
-                                    error_df = pd.DataFrame({'原始返回内容': [comparison_result]})
-                                    error_df.to_excel(pair_writer, sheet_name=f"{sheet_name[:25]}_原始返回", index=False)
-                            else:
-                                logging.warning(f"未能从Kimi获取工作表 '{sheet_name}' 的比较结果。")
-                                error_df = pd.DataFrame({'错误': [f"未能从Kimi获取 '{sheet_name}' 的工作流比较结果。"]})
-                                error_df.to_excel(pair_writer, sheet_name=f"{sheet_name[:25]}_错误", index=False)
-
-                    overview_data.append({'文件1': file1_name, '文件2': file2_name, '状态': '已完成', '说明': f"比较结果已保存至: {os.path.basename(comparison_pair_output_filename)}"})
-                    logging.info(f"--- 比较对 {file1_name} vs {file2_name} 完成 ---")
-
-                except Exception as e:
-                    logging.error(f"处理比较对 '{file1_name}' vs '{file2_name}' 时发生严重错误: {e}")
-                    overview_data.append({'文件1': file1_name, '文件2': file2_name, '状态': '处理错误', '说明': str(e)})
-
-            overall_overview_df = pd.DataFrame(overview_data)
-            overall_overview_df.to_excel(writer, sheet_name='总览', index=False)
-            logging.info("已生成总的概览表。")
-
-        logging.info(f"\n所有比较完成！详细结果已保存至: {overall_output_filename}")
-        st.session_state['final_excel_path'] = overall_output_filename
-        return overall_output_filename
-
-    except Exception as e:
-        logging.critical(f"生成总的Excel文件时发生严重错误: {e}", exc_info=True)
-        st.error(f"生成总的Excel文件时发生严重错误: {e}")
-        return None
+    logging.info("\n所有比较完成！准备提供下载。")
+    output_buffer.seek(0)
+    return output_buffer
 
 
 # --- 主界面 ---
@@ -363,37 +324,34 @@ if __name__ == "__main__":
         st.session_state['final_excel_path'] = None
 
         uploaded_files = st.session_state.get('uploaded_files', [])
-        output_dir = st.session_state.get('output_dir')
         api_key = st.session_state.get('api_key')
 
-        if not uploaded_files:
-            st.error("请先上传至少两个 Excel 文件。")
-        elif not output_dir or not os.path.isdir(output_dir):
-            st.error("请先输入一个有效的输出目录路径。")
+        if not uploaded_files or len(uploaded_files) < 2:
+            st.error("❌ 请先上传至少两个 Excel 文件。")
         elif not api_key or "sk-" not in api_key:
-            st.error("请输入有效的 Kimi API 密钥。")
+            st.error("❌ 请输入有效的 Kimi API 密钥。")
         else:
-            # os.makedirs(output_dir, exist_ok=True) # 确保输出目录存在
             dashscope.api_key = api_key
-            logging.info(f"API密钥已设置。输出目录: {output_dir}")
+            logging.info("API密钥已设置。开始执行比较...")
 
             with st.spinner("🤖 AI正在进行文件两两对比分析，请稍候..."):
-                final_report_path = perform_comparison(uploaded_files, output_dir, api_key)
+                final_report_buffer = perform_comparison(uploaded_files, api_key)
 
-            if final_report_path:
-                st.success(f"对比分析完成！总报告已保存至: `{final_report_path}`")
-                try:
-                    with open(final_report_path, "rb") as f:
-                        st.download_button(
-                            label="📥 下载总报告Excel",
-                            data=f,
-                            file_name=os.path.basename(final_report_path),
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
-                except FileNotFoundError:
-                    st.error(f"错误: 找不到生成的总报告文件以提供下载: {final_report_path}")
+            if final_report_buffer:
+                st.success("✅ 对比分析完成！请点击下方按钮下载总报告。")
+                
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                final_filename = f"Overall_Comparison_{timestamp}.xlsx"
+                
+                st.download_button(
+                    label="📥 下载总报告 (Excel)",
+                    data=final_report_buffer,
+                    file_name=final_filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
             else:
-                st.error("文件对比分析过程中发生错误，请检查日志获取详细信息。")
+                st.error("⚠️ 文件对比分析过程中发生错误，请检查上方日志获取详细信息。")
 
     else:
-        log_container.info("请在左侧上传 Excel 文件，配置输出目录和 API 密钥，然后点击“开始对比分析”。")
+        st.info("👋 欢迎使用！请在左侧上传 Excel 文件，输入 API 密钥，然后点击“开始对比分析”。")

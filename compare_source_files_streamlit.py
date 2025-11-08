@@ -216,16 +216,16 @@ def perform_comparison(uploaded_files, api_key):
             logging.info(f"\n--- 开始比较对 {i+1}/{len(file_pairs)}: {file1_name} vs {file2_name} ---")
 
             try:
-                # 重置文件对象的读取指针
+                # 重置文件对象的读取指针并使用 ExcelFile 优化内存
                 file1_obj.seek(0)
                 file2_obj.seek(0)
-                df1 = pd.read_excel(file1_obj, sheet_name=None)
-                df2 = pd.read_excel(file2_obj, sheet_name=None)
-                sheets1, sheets2 = set(df1.keys()), set(df2.keys())
+                xls1 = pd.ExcelFile(file1_obj)
+                xls2 = pd.ExcelFile(file2_obj)
+                sheets1, sheets2 = set(xls1.sheet_names), set(xls2.sheet_names)
 
             except Exception as e:
-                logging.error(f"读取 Excel 文件 '{file1_name}' 或 '{file2_name}' 时出错: {e}")
-                overview_data.append({'文件1': file1_name, '文件2': file2_name, '状态': '读取错误', '说明': str(e)})
+                logging.error(f"打开 Excel 文件 '{file1_name}' 或 '{file2_name}' 时出错: {e}")
+                overview_data.append({'文件1': file1_name, '文件2': file2_name, '状态': '打开错误', '说明': str(e)})
                 continue
 
             common_sheets = sorted(list(sheets1.intersection(sheets2)))
@@ -243,11 +243,19 @@ def perform_comparison(uploaded_files, api_key):
                 overview_data.append({'文件1': file1_name, '文件2': file2_name, '状态': '无共同工作表', '说明': '无共同工作表，跳过。'})
                 continue
 
-            logging.info(f"正在比较共同工作表: {', '.join(common_sheets)}")
+            logging.info(f"将比较共同的工作表: {', '.join(common_sheets)}")
 
             for sheet_name in common_sheets:
                 logging.info(f"--- 正在处理工作表: {sheet_name} ---")
-                current_df1, current_df2 = df1[sheet_name], df2[sheet_name]
+                try:
+                    logging.info(f"正在从 '{file1_name}' 读取工作表 '{sheet_name}'...")
+                    current_df1 = pd.read_excel(xls1, sheet_name=sheet_name)
+                    logging.info(f"正在从 '{file2_name}' 读取工作表 '{sheet_name}'...")
+                    current_df2 = pd.read_excel(xls2, sheet_name=sheet_name)
+                except Exception as e:
+                    logging.error(f"读取工作表 '{sheet_name}' 时出错: {e}")
+                    pd.DataFrame({'错误': [f"读取工作表 '{sheet_name}' 时出错: {e}"]}).to_excel(writer, sheet_name=f"错误_{pair_sheet_name_base[:20]}", index=False)
+                    continue
 
                 # 定义当前比较的详细工作表名称
                 details_sheet_name = f"差异_{pair_sheet_name_base[:15]}_{sheet_name[:10]}"
@@ -257,7 +265,8 @@ def perform_comparison(uploaded_files, api_key):
                     details_df = pd.DataFrame([{'状态': '内容完全相同', '说明': f"工作表 '{sheet_name}' 在两个文件中的内容完全相同。"}])
                     details_df.to_excel(writer, sheet_name=details_sheet_name, index=False)
                     continue
-
+                
+                logging.info(f"工作表 '{sheet_name}' 内容存在差异，准备调用 Kimi API 进行分析。")
                 comparison_result = get_comparison_from_kimi(
                     convert_df_to_json_string(current_df1),
                     convert_df_to_json_string(current_df2),

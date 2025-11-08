@@ -160,8 +160,6 @@ if 'uploaded_files' not in st.session_state:
     st.session_state['uploaded_files'] = []
 if 'output_dir' not in st.session_state:
     st.session_state['output_dir'] = ""
-if 'api_key' not in st.session_state:
-    st.session_state['api_key'] = ""
 if 'comparison_results' not in st.session_state:
     st.session_state['comparison_results'] = None
 if 'final_excel_path' not in st.session_state:
@@ -180,7 +178,7 @@ with st.sidebar:
 
     # 2. API密钥输入
     st.subheader("2. 输入密钥")
-    st.text_input("Kimi API 密钥", type="password", key='api_key', placeholder="请输入您的DashScope API密钥", help="此工具需要调用Kimi模型进行AI分析。")
+    st.text_input("Kimi API 密钥", type="password", key='user_api_key', placeholder="请输入您的DashScope API密钥", help="此工具需要调用Kimi模型进行AI分析。")
 
     st.divider()
 
@@ -332,34 +330,43 @@ if process_button:
     st.session_state['final_excel_path'] = None
 
     uploaded_files = st.session_state.get('uploaded_files', [])
-    api_key = st.session_state.get('api_key')
+    # 修复：直接从 session_state 的属性访问，使用新的 key
+    api_key = st.session_state.user_api_key if 'user_api_key' in st.session_state else ""
 
     if not uploaded_files or len(uploaded_files) < 2:
         st.error("❌ 请先上传至少两个 Excel 文件。")
-    elif not api_key or "sk-" not in api_key:
-        st.error("❌ 请输入有效的 Kimi API 密钥。")
+    elif not api_key or not api_key.startswith("sk-"):
+        st.error("❌ 请输入有效的 Kimi API 密钥 (应以 'sk-' 开头)。")
     else:
-        dashscope.api_key = api_key
-        logging.info("API密钥已设置。开始执行比较...")
+        try:
+            dashscope.api_key = api_key
+            logging.info("API密钥已设置。开始执行比较...")
 
-        with st.spinner("🤖 AI正在进行文件两两对比分析，请稍候..."):
-            final_report_buffer = perform_comparison(uploaded_files, api_key)
+            with st.spinner("🤖 AI正在进行文件两两对比分析，请稍候..."):
+                final_report_buffer = perform_comparison(uploaded_files, api_key)
 
-        if final_report_buffer:
-            st.success("✅ 对比分析完成！请点击下方按钮下载总报告。")
-            
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            final_filename = f"Overall_Comparison_{timestamp}.xlsx"
-            
-            st.download_button(
-                label="📥 下载总报告 (Excel)",
-                data=final_report_buffer,
-                file_name=final_filename,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-        else:
-            st.error("⚠️ 文件对比分析过程中发生错误，请检查上方日志获取详细信息。")
+            if final_report_buffer:
+                st.success("✅ 对比分析完成！请点击下方按钮下载总报告。")
+                
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                final_filename = f"Overall_Comparison_{timestamp}.xlsx"
+                
+                st.download_button(
+                    label="📥 下载总报告 (Excel)",
+                    data=final_report_buffer,
+                    file_name=final_filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+            else:
+                st.error("⚠️ 文件对比分析过程中发生错误，请检查上方日志获取详细信息。")
+        except Exception as e:
+            import traceback
+            error_message = f"发生了一个意外错误: {str(e)}"
+            logging.error(error_message)
+            logging.error(traceback.format_exc())
+            st.error(error_message)
+            st.code(traceback.format_exc())
 
 else:
     st.info("👋 欢迎使用！请在左侧上传 Excel 文件，输入 API 密钥，然后点击“开始对比分析”。")

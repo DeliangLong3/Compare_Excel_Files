@@ -1,4 +1,4 @@
-streamlit==1.30.0
-pandas==2.1.4
-dashscope==1.14.0
-xlsxwriter==3.1.9
+streamlit
+pandas
+dashscope
+xlsxwriter

@@ -142,22 +142,23 @@ def setup_logging(container):
         handler.setFormatter(formatter)
         logger.addHandler(handler)
 
-# --- 文件选择函数 (修改为使用Streamlit组件) ---
-# def select_folder(key, label): # 移除旧函数
-#     """打开文件夹选择器并更新session_state中的路径。"""
-#     root = Tk()
-#     root.withdraw()  # 隐藏主窗口
-#     root.attributes('-topmost', True)  # 将对话框置于顶层
-#     folder_path = filedialog.askdirectory(title=label)
-#     root.destroy()
-#     if folder_path:
-#         st.session_state[key] = folder_path.replace("/", "\\") # 统一路径分隔符
+# --- 文件上传组件 ---
+def handle_file_upload():
+    """处理用户上传的文件，并返回文件列表。"""
+    uploaded_files = st.file_uploader("请上传要对比的 Excel 文件 (.xlsx)", type=["xlsx"], accept_multiple_files=True)
+    
+    if uploaded_files:
+        # 将上传的文件保存到临时目录，以便后续处理
+        # 注意：在 Streamlit Cloud 中，文件上传是临时的，通常保存在内存或临时存储中
+        # 这里我们直接处理上传的文件对象
+        return uploaded_files
+    return []
 
 # --- 初始化会话状态 ---
-if 'input_path' not in st.session_state:
-    st.session_state['input_path'] = ""
-if 'output_path' not in st.session_state:
-    st.session_state['output_path'] = ""
+if 'uploaded_files' not in st.session_state:
+    st.session_state['uploaded_files'] = []
+if 'output_dir' not in st.session_state:
+    st.session_state['output_dir'] = ""
 if 'api_key' not in st.session_state:
     st.session_state['api_key'] = ""
 if 'comparison_results' not in st.session_state:
@@ -169,16 +170,15 @@ if 'final_excel_path' not in st.session_state:
 with st.sidebar:
     st.header("⚙️ 配置选项")
 
-    # 使用 st.text_input 来让用户输入目录路径
-    st.text_input("1. 输入源文件目录", key='input_path', placeholder="包含Excel文件的文件夹路径")
-    # 移除 tkinter 相关的按钮
+    # 使用文件上传组件代替目录输入
+    uploaded_files = handle_file_upload()
+    st.session_state['uploaded_files'] = uploaded_files # 保存上传的文件列表
 
-    st.text_input("2. 输入输出目录", key='output_path', placeholder="保存对比结果的文件夹路径")
-    # 移除 tkinter 相关的按钮
+    st.text_input("1. 输入输出目录", key='output_dir', placeholder="保存对比结果的文件夹路径")
 
     st.divider()
 
-    st.text_input("3. Kimi API 密钥", type="password", key='api_key', placeholder="请输入您的DashScope API密钥")
+    st.text_input("2. Kimi API 密钥", type="password", key='api_key', placeholder="请输入您的DashScope API密钥")
 
     st.divider()
 
@@ -186,22 +186,36 @@ with st.sidebar:
     process_button = st.button("开始对比分析", type="primary", use_container_width=True)
 
 # --- 文件比较核心逻辑 ---
-def perform_comparison(input_dir, output_dir, api_key):
+def perform_comparison(uploaded_files, output_dir, api_key):
     """
-    查找输入目录下的所有Excel文件，进行两两比较，并将结果保存到输出目录。
+    处理上传的Excel文件，进行两两比较，并将结果保存到输出目录。
     """
-    excel_files = [f for f in glob.glob(os.path.join(input_dir, '*.xlsx')) if not os.path.basename(f).startswith('~$')]
+    if len(uploaded_files) < 2:
+        logging.error("请上传至少两个 Excel 文件进行比较。")
+        return None
 
-    if len(excel_files) < 2:
-        logging.error(f"在目录 '{input_dir}' 中需要至少2个 .xlsx 文件进行比较，但只找到 {len(excel_files)} 个。")
+    # 将上传的文件保存到临时目录，以便 glob.glob 可以找到它们
+    # 注意：Streamlit Cloud 的文件上传是临时的，直接使用文件对象更佳
+    # 这里我们模拟一个文件列表，包含文件名和文件内容
+    file_data = []
+    for uploaded_file in uploaded_files:
+        file_name = uploaded_file.name
+        try:
+            # 读取文件内容，这里假设是Excel文件，需要用pandas读取
+            # 为了简化，我们先只获取文件名，实际比较时需要读取内容
+            file_data.append({'name': file_name, 'file_obj': uploaded_file})
+        except Exception as e:
+            logging.error(f"读取上传文件 '{file_name}' 时出错: {e}")
+            continue
+
+    if len(file_data) < 2:
+        logging.error("未能成功处理至少两个 Excel 文件。")
         return None
 
     # 生成所有文件对的组合
-    file_pairs = list(combinations(excel_files, 2))
+    file_pairs = list(combinations(file_data, 2))
 
-    all_comparison_outputs = {} # 存储所有比较结果的字典
-
-    logging.info(f"发现 {len(excel_files)} 个Excel文件，将进行 {len(file_pairs)} 对两两比较。")
+    logging.info(f"发现 {len(file_data)} 个 Excel 文件，将进行 {len(file_pairs)} 对两两比较。")
 
     # 创建一个总的ExcelWriter来写入所有结果
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -211,17 +225,24 @@ def perform_comparison(input_dir, output_dir, api_key):
         with pd.ExcelWriter(overall_output_filename, engine='xlsxwriter') as writer:
             # 写入一个概览表，列出所有比较对
             overview_data = []
-            for i, (file1_path, file2_path) in enumerate(file_pairs):
-                file1_name, file2_name = os.path.basename(file1_path), os.path.basename(file2_path)
+            for i, (file1_info, file2_info) in enumerate(file_pairs):
+                file1_name, file2_name = file1_info['name'], file2_info['name']
+                file1_obj, file2_obj = file1_info['file_obj'], file2_info['file_obj']
                 logging.info(f"\n--- 开始比较对 {i+1}/{len(file_pairs)}: {file1_name} vs {file2_name} ---")
 
                 try:
-                    xls1 = pd.ExcelFile(file1_path)
-                    xls2 = pd.ExcelFile(file2_path)
-                    sheets1 = set(xls1.sheet_names)
-                    sheets2 = set(xls2.sheet_names)
+                    # 使用 BytesIO 来处理上传的文件对象
+                    from io import BytesIO
+                    
+                    # 读取 Excel 文件内容
+                    df1 = pd.read_excel(BytesIO(file1_obj.getvalue()), sheet_name=None)
+                    df2 = pd.read_excel(BytesIO(file2_obj.getvalue()), sheet_name=None)
+                    
+                    sheets1 = set(df1.keys())
+                    sheets2 = set(df2.keys())
+
                 except Exception as e:
-                    logging.error(f"读取Excel文件 '{file1_name}' 或 '{file2_name}' 时出错: {e}")
+                    logging.error(f"读取 Excel 文件 '{file1_name}' 或 '{file2_name}' 时出错: {e}")
                     overview_data.append({'文件1': file1_name, '文件2': file2_name, '状态': '读取错误', '说明': str(e)})
                     continue
 
@@ -234,15 +255,10 @@ def perform_comparison(input_dir, output_dir, api_key):
 
                 logging.info(f"正在比较共同工作表: {', '.join(common_sheets)}")
 
-                # 为当前比较对创建一个临时的ExcelWriter，用于写入其详细结果
-                # 注意：这里我们不直接写入总的writer，而是先处理完一对，再将结果整合
-                # 或者，我们可以为每一对创建一个单独的sheet，但文件名需要处理
-
                 comparison_pair_output_filename = os.path.join(output_dir, f'Comparison_{file1_name}_vs_{file2_name}.xlsx')
 
                 try:
                     with pd.ExcelWriter(comparison_pair_output_filename, engine='xlsxwriter') as pair_writer:
-                        # 写入概览到当前比较对的Excel文件
                         overview_pair_data = {
                             '状态': ['共有工作表', '仅在文件1中', '仅在文件2中'],
                             '工作表名称': [", ".join(common_sheets), ", ".join(sorted(list(sheets1 - sheets2))), ", ".join(sorted(list(sheets2 - sheets1)))]
@@ -251,13 +267,14 @@ def perform_comparison(input_dir, output_dir, api_key):
                         overview_pair_df.to_excel(pair_writer, sheet_name='概览', index=False)
                         logging.info(f"已生成 '{file1_name}_vs_{file2_name}' 的“概览”工作表。")
 
-                        # 比较共有的工作表
                         for sheet_name in common_sheets:
                             logging.info(f"--- 正在处理工作表: {sheet_name} ---")
-                            df1 = xls1.parse(sheet_name)
-                            df2 = xls2.parse(sheet_name)
+                            
+                            # 获取当前工作表的 DataFrame
+                            current_df1 = df1[sheet_name]
+                            current_df2 = df2[sheet_name]
 
-                            if df1.equals(df2):
+                            if current_df1.equals(current_df2):
                                 logging.info(f"工作表 '{sheet_name}' 内容完全相同，跳过API分析。")
                                 summary_text = f"工作表 '{sheet_name}' 在两个文件中的内容完全相同。"
                                 df_details = pd.DataFrame([{'状态': '相同', '说明': summary_text}])
@@ -267,8 +284,8 @@ def perform_comparison(input_dir, output_dir, api_key):
                                 df_details.to_excel(pair_writer, sheet_name=f"{sheet_name[:25]}_差异", index=False)
                                 continue
 
-                            df1_content_str = convert_df_to_json_string(df1)
-                            df2_content_str = convert_df_to_json_string(df2)
+                            df1_content_str = convert_df_to_json_string(current_df1)
+                            df2_content_str = convert_df_to_json_string(current_df2)
 
                             comparison_result = get_comparison_from_kimi(
                                 df1_content_str, df2_content_str, file1_name, file2_name, sheet_name, api_key
@@ -280,7 +297,6 @@ def perform_comparison(input_dir, output_dir, api_key):
                                     lines = table_str.strip().split('\n')
 
                                     if len(lines) > 1 and '|' in lines[0] and '---' in lines[1]:
-                                        from io import StringIO
                                         header = [h.strip() for h in lines[0].strip().strip('|').split('|')]
                                         data_rows = []
                                         for line in lines[2:]:
@@ -299,7 +315,6 @@ def perform_comparison(input_dir, output_dir, api_key):
 
                                     details_df.to_excel(pair_writer, sheet_name=f"{sheet_name[:25]}_差异对比", index=False)
 
-                                    # 自动调整列宽
                                     worksheet = pair_writer.sheets[f"{sheet_name[:25]}_差异对比"]
                                     for idx, col in enumerate(details_df):
                                         series = details_df[col]
@@ -317,7 +332,6 @@ def perform_comparison(input_dir, output_dir, api_key):
                                 error_df = pd.DataFrame({'错误': [f"未能从Kimi获取 '{sheet_name}' 的工作流比较结果。"]})
                                 error_df.to_excel(pair_writer, sheet_name=f"{sheet_name[:25]}_错误", index=False)
 
-                    # 将当前比较对的结果添加到总概览中
                     overview_data.append({'文件1': file1_name, '文件2': file2_name, '状态': '已完成', '说明': f"比较结果已保存至: {os.path.basename(comparison_pair_output_filename)}"})
                     logging.info(f"--- 比较对 {file1_name} vs {file2_name} 完成 ---")
 
@@ -325,7 +339,6 @@ def perform_comparison(input_dir, output_dir, api_key):
                     logging.error(f"处理比较对 '{file1_name}' vs '{file2_name}' 时发生严重错误: {e}")
                     overview_data.append({'文件1': file1_name, '文件2': file2_name, '状态': '处理错误', '说明': str(e)})
 
-            # 将总概览写入总的Excel文件
             overall_overview_df = pd.DataFrame(overview_data)
             overall_overview_df.to_excel(writer, sheet_name='总览', index=False)
             logging.info("已生成总的概览表。")
@@ -349,26 +362,25 @@ if __name__ == "__main__":
         st.session_state['comparison_results'] = None
         st.session_state['final_excel_path'] = None
 
-        input_dir = st.session_state.get('input_path')
-        output_dir = st.session_state.get('output_path')
+        uploaded_files = st.session_state.get('uploaded_files', [])
+        output_dir = st.session_state.get('output_dir')
         api_key = st.session_state.get('api_key')
 
-        if not input_dir or not os.path.isdir(input_dir):
-            st.error("请先输入一个有效的源文件目录路径。")
-        elif not output_dir or not os.path.isdir(output_dir): # 增加对输出目录的检查
+        if not uploaded_files:
+            st.error("请先上传至少两个 Excel 文件。")
+        elif not output_dir or not os.path.isdir(output_dir):
             st.error("请先输入一个有效的输出目录路径。")
         elif not api_key or "sk-" not in api_key:
             st.error("请输入有效的 Kimi API 密钥。")
         else:
             # os.makedirs(output_dir, exist_ok=True) # 确保输出目录存在
             dashscope.api_key = api_key
-            logging.info(f"API密钥已设置。源目录: {input_dir}, 输出目录: {output_dir}")
+            logging.info(f"API密钥已设置。输出目录: {output_dir}")
 
             with st.spinner("🤖 AI正在进行文件两两对比分析，请稍候..."):
-                final_report_path = perform_comparison(input_dir, output_dir, api_key)
+                final_report_path = perform_comparison(uploaded_files, output_dir, api_key)
 
             if final_report_path:
-                # 显示结果和下载链接
                 st.success(f"对比分析完成！总报告已保存至: `{final_report_path}`")
                 try:
                     with open(final_report_path, "rb") as f:
@@ -384,4 +396,4 @@ if __name__ == "__main__":
                 st.error("文件对比分析过程中发生错误，请检查日志获取详细信息。")
 
     else:
-        log_container.info("请在左侧配置源文件目录、输出目录和API密钥，然后点击“开始对比分析”。")
+        log_container.info("请在左侧上传 Excel 文件，配置输出目录和 API 密钥，然后点击“开始对比分析”。")

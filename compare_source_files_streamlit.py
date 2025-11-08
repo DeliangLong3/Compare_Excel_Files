@@ -13,7 +13,7 @@ from http import HTTPStatus
 import dashscope
 from datetime import datetime
 import logging
-from tkinter import Tk, filedialog
+# from tkinter import Tk, filedialog # 移除 tkinter 导入
 from itertools import combinations # 用于生成文件对
 
 # --- Kimi API 相关函数 (从 compare_source_files.py 迁移) ---
@@ -142,16 +142,16 @@ def setup_logging(container):
         handler.setFormatter(formatter)
         logger.addHandler(handler)
 
-# --- 文件选择函数 ---
-def select_folder(key, label):
-    """打开文件夹选择器并更新session_state中的路径。"""
-    root = Tk()
-    root.withdraw()  # 隐藏主窗口
-    root.attributes('-topmost', True)  # 将对话框置于顶层
-    folder_path = filedialog.askdirectory(title=label)
-    root.destroy()
-    if folder_path:
-        st.session_state[key] = folder_path.replace("/", "\\") # 统一路径分隔符
+# --- 文件选择函数 (修改为使用Streamlit组件) ---
+# def select_folder(key, label): # 移除旧函数
+#     """打开文件夹选择器并更新session_state中的路径。"""
+#     root = Tk()
+#     root.withdraw()  # 隐藏主窗口
+#     root.attributes('-topmost', True)  # 将对话框置于顶层
+#     folder_path = filedialog.askdirectory(title=label)
+#     root.destroy()
+#     if folder_path:
+#         st.session_state[key] = folder_path.replace("/", "\\") # 统一路径分隔符
 
 # --- 初始化会话状态 ---
 if 'input_path' not in st.session_state:
@@ -169,11 +169,12 @@ if 'final_excel_path' not in st.session_state:
 with st.sidebar:
     st.header("⚙️ 配置选项")
 
-    st.text_input("1. 选择源文件目录", key='input_path', placeholder="包含Excel文件的文件夹")
-    st.button("浏览...", on_click=select_folder, args=('input_path', "请选择包含源Excel文件的文件夹"), key="browse_input")
+    # 使用 st.text_input 来让用户输入目录路径
+    st.text_input("1. 输入源文件目录", key='input_path', placeholder="包含Excel文件的文件夹路径")
+    # 移除 tkinter 相关的按钮
 
-    st.text_input("2. 选择输出目录", key='output_path', placeholder="保存对比结果的文件夹")
-    st.button("浏览...", on_click=select_folder, args=('output_path', "请选择保存对比结果的文件夹"), key="browse_output")
+    st.text_input("2. 输入输出目录", key='output_path', placeholder="保存对比结果的文件夹路径")
+    # 移除 tkinter 相关的按钮
 
     st.divider()
 
@@ -190,14 +191,14 @@ def perform_comparison(input_dir, output_dir, api_key):
     查找输入目录下的所有Excel文件，进行两两比较，并将结果保存到输出目录。
     """
     excel_files = [f for f in glob.glob(os.path.join(input_dir, '*.xlsx')) if not os.path.basename(f).startswith('~$')]
-    
+
     if len(excel_files) < 2:
         logging.error(f"在目录 '{input_dir}' 中需要至少2个 .xlsx 文件进行比较，但只找到 {len(excel_files)} 个。")
         return None
 
     # 生成所有文件对的组合
     file_pairs = list(combinations(excel_files, 2))
-    
+
     all_comparison_outputs = {} # 存储所有比较结果的字典
 
     logging.info(f"发现 {len(excel_files)} 个Excel文件，将进行 {len(file_pairs)} 对两两比较。")
@@ -205,7 +206,7 @@ def perform_comparison(input_dir, output_dir, api_key):
     # 创建一个总的ExcelWriter来写入所有结果
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     overall_output_filename = os.path.join(output_dir, f'Overall_Comparison_{timestamp}.xlsx')
-    
+
     try:
         with pd.ExcelWriter(overall_output_filename, engine='xlsxwriter') as writer:
             # 写入一个概览表，列出所有比较对
@@ -213,7 +214,7 @@ def perform_comparison(input_dir, output_dir, api_key):
             for i, (file1_path, file2_path) in enumerate(file_pairs):
                 file1_name, file2_name = os.path.basename(file1_path), os.path.basename(file2_path)
                 logging.info(f"\n--- 开始比较对 {i+1}/{len(file_pairs)}: {file1_name} vs {file2_name} ---")
-                
+
                 try:
                     xls1 = pd.ExcelFile(file1_path)
                     xls2 = pd.ExcelFile(file2_path)
@@ -225,20 +226,20 @@ def perform_comparison(input_dir, output_dir, api_key):
                     continue
 
                 common_sheets = sorted(list(sheets1.intersection(sheets2)))
-                
+
                 if not common_sheets:
                     logging.warning(f"文件 '{file1_name}' 和 '{file2_name}' 没有共同的工作表可供比较。")
                     overview_data.append({'文件1': file1_name, '文件2': file2_name, '状态': '无共同工作表', '说明': '两个文件没有共同的工作表可供比较。'})
                     continue
 
                 logging.info(f"正在比较共同工作表: {', '.join(common_sheets)}")
-                
+
                 # 为当前比较对创建一个临时的ExcelWriter，用于写入其详细结果
                 # 注意：这里我们不直接写入总的writer，而是先处理完一对，再将结果整合
                 # 或者，我们可以为每一对创建一个单独的sheet，但文件名需要处理
-                
+
                 comparison_pair_output_filename = os.path.join(output_dir, f'Comparison_{file1_name}_vs_{file2_name}.xlsx')
-                
+
                 try:
                     with pd.ExcelWriter(comparison_pair_output_filename, engine='xlsxwriter') as pair_writer:
                         # 写入概览到当前比较对的Excel文件
@@ -255,12 +256,12 @@ def perform_comparison(input_dir, output_dir, api_key):
                             logging.info(f"--- 正在处理工作表: {sheet_name} ---")
                             df1 = xls1.parse(sheet_name)
                             df2 = xls2.parse(sheet_name)
-                            
+
                             if df1.equals(df2):
                                 logging.info(f"工作表 '{sheet_name}' 内容完全相同，跳过API分析。")
                                 summary_text = f"工作表 '{sheet_name}' 在两个文件中的内容完全相同。"
                                 df_details = pd.DataFrame([{'状态': '相同', '说明': summary_text}])
-                                
+
                                 summary_df = pd.DataFrame({'总结': [summary_text]})
                                 summary_df.to_excel(pair_writer, sheet_name=f"{sheet_name[:25]}_总结", index=False)
                                 df_details.to_excel(pair_writer, sheet_name=f"{sheet_name[:25]}_差异", index=False)
@@ -295,16 +296,16 @@ def perform_comparison(input_dir, output_dir, api_key):
                                             details_df['差异说明'] = "Kimi报告在此工作表中未发现显著差异。"
                                     else:
                                         details_df = pd.DataFrame([{'说明': f"Kimi报告在工作表 '{sheet_name}' 中未发现差异或返回格式不正确。", '原始输出': table_str}])
-                                    
+
                                     details_df.to_excel(pair_writer, sheet_name=f"{sheet_name[:25]}_差异对比", index=False)
-                                    
+
                                     # 自动调整列宽
                                     worksheet = pair_writer.sheets[f"{sheet_name[:25]}_差异对比"]
                                     for idx, col in enumerate(details_df):
                                         series = details_df[col]
                                         max_len = max((series.astype(str).map(len).max(), len(str(series.name)))) + 2
                                         worksheet.set_column(idx, idx, min(max_len, 50))
-                                    
+
                                     logging.info(f"已将 '{sheet_name}' 的详细差异对比结果写入到输出文件中。")
 
                                 except Exception as e:
@@ -315,7 +316,7 @@ def perform_comparison(input_dir, output_dir, api_key):
                                 logging.warning(f"未能从Kimi获取工作表 '{sheet_name}' 的比较结果。")
                                 error_df = pd.DataFrame({'错误': [f"未能从Kimi获取 '{sheet_name}' 的工作流比较结果。"]})
                                 error_df.to_excel(pair_writer, sheet_name=f"{sheet_name[:25]}_错误", index=False)
-                    
+
                     # 将当前比较对的结果添加到总概览中
                     overview_data.append({'文件1': file1_name, '文件2': file2_name, '状态': '已完成', '说明': f"比较结果已保存至: {os.path.basename(comparison_pair_output_filename)}"})
                     logging.info(f"--- 比较对 {file1_name} vs {file2_name} 完成 ---")
@@ -347,25 +348,25 @@ if __name__ == "__main__":
         log_container.empty()
         st.session_state['comparison_results'] = None
         st.session_state['final_excel_path'] = None
-        
+
         input_dir = st.session_state.get('input_path')
         output_dir = st.session_state.get('output_path')
         api_key = st.session_state.get('api_key')
 
         if not input_dir or not os.path.isdir(input_dir):
-            st.error("请先选择一个有效的源文件目录。")
-        elif not output_dir:
-            st.error("请先选择一个输出目录。")
+            st.error("请先输入一个有效的源文件目录路径。")
+        elif not output_dir or not os.path.isdir(output_dir): # 增加对输出目录的检查
+            st.error("请先输入一个有效的输出目录路径。")
         elif not api_key or "sk-" not in api_key:
             st.error("请输入有效的 Kimi API 密钥。")
         else:
-            os.makedirs(output_dir, exist_ok=True)
+            # os.makedirs(output_dir, exist_ok=True) # 确保输出目录存在
             dashscope.api_key = api_key
             logging.info(f"API密钥已设置。源目录: {input_dir}, 输出目录: {output_dir}")
 
             with st.spinner("🤖 AI正在进行文件两两对比分析，请稍候..."):
                 final_report_path = perform_comparison(input_dir, output_dir, api_key)
-            
+
             if final_report_path:
                 # 显示结果和下载链接
                 st.success(f"对比分析完成！总报告已保存至: `{final_report_path}`")

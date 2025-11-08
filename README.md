@@ -7,7 +7,7 @@
 *   **多文件对比**: 支持同时选择多个 Excel 文件进行两两对比。
 *   **智能差异分析**: 利用 Kimi LLM 精确识别和总结不同工作表之间的差异，包括数值、文本、格式、增删等。
 *   **可视化报告**: 将对比结果以清晰的 Markdown 表格形式呈现，并生成汇总的 Excel 报告。
-*   **用户友好的界面**: 通过 Streamlit 提供直观的界面，方便用户选择文件、目录和输入 API 密钥。
+*   **用户友好的界面**: 通过 Streamlit 提供直观的界面，方便用户输入文件和目录路径。
 
 ## 安装指南
 
@@ -34,16 +34,16 @@
     ```
 
 3.  **安装依赖**:
-    在项目根目录下，运行以下命令安装所需的 Python 包。请确保您已将 `requirements.txt` 文件添加到项目根目录。
+    在项目根目录下，运行以下命令安装所需的 Python 包。此命令将根据 `requirements.txt` 文件自动安装所有依赖项。
     ```bash
     pip install -r requirements.txt
     ```
-    如果您还没有 `requirements.txt` 文件，可以手动创建并添加以下内容：
+    `requirements.txt` 文件内容如下：
     ```txt
-    streamlit==1.30.0
-    pandas==2.1.4
-    dashscope==1.14.0
-    xlsxwriter==3.1.9
+    streamlit
+    pandas
+    dashscope
+    xlsxwriter
     ```
 
 ## 使用方法
@@ -55,8 +55,8 @@
     ```
 
 2.  **配置参数**:
-    *   **源文件目录**: 选择包含您要对比的 Excel (`.xlsx`) 文件的文件夹。
-    *   **输出目录**: 选择保存对比结果报告的文件夹。
+    *   **源文件目录**: 输入包含您要对比的 Excel (`.xlsx`) 文件的文件夹路径。
+    *   **输出目录**: 输入保存对比结果报告的文件夹路径。
     *   **Kimi API 密钥**: 输入您的 DashScope API 密钥。
 
 3.  **开始对比**:
